@@ -1,17 +1,13 @@
 #!/usr/bin/env python3
-"""THE WORLD — a one-image newspaper front page summing up the world news
-of Wednesday 25 November 2026.
+"""THE WORLD — front page for Wednesday, 25 November 2026.
 
-Deterministic, standard-library-only Python 3.13. Running `python3 main.py`
-writes entry.png (1024x1024, under 1 MiB) to the output directory; running it
-twice writes byte-identical files. No network, no clock, no randomness.
-
-The picture is a broadsheet front page: masthead, dateline, the day's lead
-story (Ukraine confirms its drone strike on a Russian ship in the Gulf of
-Finland), three more front page stories (the Houthi strike on Riyadh's
-tallest tower, NATO's space-defence vow, the climate talks ending with no
-deal), an IN BRIEF strip and a BY THE NUMBERS strip, all drawn with a small
-5x7 bitmap font scaled up, and packed into a PNG by hand.
+Deterministic, stdlib-only newspaper front-page renderer. Draws a 1024x1024
+PNG broadsheet summing up the day's world news and writes it to entry.png.
+No network, no clock, no randomness: the same input always yields the same
+bytes. Output goes to MAKEFUN_OUTPUT_DIR if set, else /output when it
+exists, else the current directory. A best-effort copy next to this script
+is attempted but never allowed to fail the run (the grader's repo dir is
+read-only).
 """
 
 import os
@@ -19,402 +15,392 @@ import struct
 import sys
 import zlib
 
-WIDTH = 1024
-HEIGHT = 1024
-MARGIN = 36
+PAGE_W = 1024
+PAGE_H = 1024
+INK = (18, 18, 18)
+PAPER = (250, 247, 238)
+GREY = (110, 108, 100)
+RULE = (40, 40, 40)
 
-INK = (0, 0, 0)
-PAPER = (255, 255, 255)
-GREY = (90, 90, 90)
 
-# ---------------------------------------------------------------------------
-# 5x7 bitmap font: each glyph is seven rows, each row five bits (bit 4 is the
-# leftmost pixel). Uppercase, lowercase, digits and punctuation.
-# ---------------------------------------------------------------------------
-FONT = {
-    " ": (0, 0, 0, 0, 0, 0, 0),
-    "!": (4, 4, 4, 4, 4, 0, 4),
-    '"': (10, 10, 10, 0, 0, 0, 0),
-    "#": (10, 10, 31, 10, 31, 10, 10),
-    "$": (4, 15, 20, 14, 5, 30, 4),
-    "%": (24, 25, 2, 4, 8, 19, 24),
-    "&": (12, 18, 20, 8, 21, 18, 13),
-    "'": (4, 4, 8, 0, 0, 0, 0),
-    "(": (2, 4, 8, 8, 8, 4, 2),
-    ")": (8, 4, 2, 2, 2, 4, 8),
-    "*": (0, 4, 21, 14, 21, 4, 0),
-    "+": (0, 4, 4, 31, 4, 4, 0),
-    ",": (0, 0, 0, 0, 12, 4, 8),
-    "-": (0, 0, 0, 31, 0, 0, 0),
-    ".": (0, 0, 0, 0, 0, 12, 12),
-    "/": (1, 1, 2, 4, 8, 16, 16),
-    "0": (14, 17, 19, 21, 25, 17, 14),
-    "1": (4, 12, 4, 4, 4, 4, 14),
-    "2": (14, 17, 1, 6, 8, 16, 31),
-    "3": (31, 2, 4, 2, 1, 17, 14),
-    "4": (2, 6, 10, 18, 31, 2, 2),
-    "5": (31, 16, 30, 1, 1, 17, 14),
-    "6": (6, 8, 16, 30, 17, 17, 14),
-    "7": (31, 1, 2, 4, 8, 8, 8),
-    "8": (14, 17, 17, 14, 17, 17, 14),
-    "9": (14, 17, 17, 15, 1, 2, 12),
-    ":": (0, 12, 12, 0, 12, 12, 0),
-    ";": (0, 12, 4, 0, 12, 4, 8),
-    "<": (2, 4, 8, 16, 8, 4, 2),
-    "=": (0, 0, 31, 0, 31, 0, 0),
-    ">": (8, 4, 2, 1, 2, 4, 8),
-    "?": (14, 17, 1, 2, 4, 0, 4),
-    "@": (14, 17, 23, 21, 22, 16, 14),
-    "A": (14, 17, 17, 31, 17, 17, 17),
-    "B": (30, 17, 17, 30, 17, 17, 30),
-    "C": (14, 17, 16, 16, 16, 17, 14),
-    "D": (30, 17, 17, 17, 17, 17, 30),
-    "E": (31, 16, 16, 30, 16, 16, 31),
-    "F": (31, 16, 16, 30, 16, 16, 16),
-    "G": (14, 17, 16, 23, 17, 17, 15),
-    "H": (17, 17, 17, 31, 17, 17, 17),
-    "I": (14, 4, 4, 4, 4, 4, 14),
-    "J": (1, 1, 1, 1, 1, 17, 14),
-    "K": (17, 18, 20, 24, 20, 18, 17),
-    "L": (16, 16, 16, 16, 16, 16, 31),
-    "M": (17, 27, 21, 21, 17, 17, 17),
-    "N": (17, 25, 21, 19, 17, 17, 17),
-    "O": (14, 17, 17, 17, 17, 17, 14),
-    "P": (30, 17, 17, 30, 16, 16, 16),
-    "Q": (14, 17, 17, 17, 21, 18, 13),
-    "R": (30, 17, 17, 30, 20, 18, 17),
-    "S": (15, 16, 16, 14, 1, 1, 30),
-    "T": (31, 4, 4, 4, 4, 4, 4),
-    "U": (17, 17, 17, 17, 17, 17, 14),
-    "V": (17, 17, 17, 17, 17, 10, 4),
-    "W": (17, 17, 17, 21, 21, 27, 17),
-    "X": (17, 17, 10, 4, 10, 17, 17),
-    "Y": (17, 17, 10, 4, 4, 4, 4),
-    "Z": (31, 1, 2, 4, 8, 16, 31),
-    "[": (14, 8, 8, 8, 8, 8, 14),
-    "\\": (16, 16, 8, 4, 2, 1, 1),
-    "]": (14, 2, 2, 2, 2, 2, 14),
-    "^": (4, 10, 17, 0, 0, 0, 0),
-    "_": (0, 0, 0, 0, 0, 0, 31),
-    "`": (8, 4, 2, 0, 0, 0, 0),
-    "a": (0, 0, 14, 1, 15, 17, 15),
-    "b": (16, 16, 30, 17, 17, 17, 30),
-    "c": (0, 0, 14, 17, 16, 17, 14),
-    "d": (1, 1, 15, 17, 17, 17, 15),
-    "e": (0, 0, 14, 17, 31, 16, 14),
-    "f": (6, 8, 30, 8, 8, 8, 8),
-    "g": (0, 15, 17, 17, 15, 1, 14),
-    "h": (16, 16, 30, 17, 17, 17, 17),
-    "i": (4, 0, 12, 4, 4, 4, 14),
-    "j": (2, 0, 6, 2, 2, 18, 12),
-    "k": (16, 16, 18, 20, 24, 20, 18),
-    "l": (12, 4, 4, 4, 4, 4, 14),
-    "m": (0, 0, 26, 21, 21, 21, 21),
-    "n": (0, 0, 30, 17, 17, 17, 17),
-    "o": (0, 0, 14, 17, 17, 17, 14),
-    "p": (0, 0, 30, 17, 17, 30, 16),
-    "q": (0, 0, 15, 17, 17, 15, 1),
-    "r": (0, 0, 22, 25, 16, 16, 16),
-    "s": (0, 0, 15, 16, 14, 1, 30),
-    "t": (8, 8, 30, 8, 8, 9, 6),
-    "u": (0, 0, 17, 17, 17, 19, 13),
-    "v": (0, 0, 17, 17, 17, 10, 4),
-    "w": (0, 0, 17, 17, 21, 21, 27),
-    "x": (0, 0, 17, 10, 4, 10, 17),
-    "y": (0, 0, 17, 17, 15, 1, 14),
-    "z": (0, 0, 31, 2, 4, 8, 31),
-    "{": (6, 8, 8, 30, 8, 8, 6),
-    "|": (4, 4, 4, 4, 4, 4, 4),
-    "}": (12, 2, 2, 15, 2, 2, 12),
-    "~": (0, 0, 14, 21, 0, 0, 0),
+# ---------------------------------------------------------------- font ----
+# Each glyph is seven rows of five cells; '#' is ink, '.' is blank.
+# Hand-drawn for this page; only the characters the page actually uses.
+GLYPHS = {
+    "A": ("..#..", ".#.#.", "#...#", "#####", "#...#", "#...#", "#...#"),
+    "B": ("####.", "#...#", "#...#", "####.", "#...#", "#...#", "####."),
+    "C": (".####", "#....", "#....", "#....", "#....", "#....", ".####"),
+    "D": ("####.", "#...#", "#...#", "#...#", "#...#", "#...#", "####."),
+    "E": ("#####", "#....", "#....", "####.", "#....", "#....", "#####"),
+    "F": ("#####", "#....", "#....", "####.", "#....", "#....", "#...."),
+    "G": (".####", "#....", "#....", "#.###", "#...#", "#...#", ".###."),
+    "H": ("#...#", "#...#", "#...#", "#####", "#...#", "#...#", "#...#"),
+    "I": (".###.", "..#..", "..#..", "..#..", "..#..", "..#..", ".###."),
+    "J": ("..###", "...#.", "...#.", "...#.", "...#.", "#..#.", ".##.."),
+    "K": ("#...#", "#..#.", "#.#..", "##...", "#.#..", "#..#.", "#...#"),
+    "L": ("#....", "#....", "#....", "#....", "#....", "#....", "#####"),
+    "M": ("#...#", "##.##", "#.#.#", "#.#.#", "#...#", "#...#", "#...#"),
+    "N": ("#...#", "##..#", "#.#.#", "#..##", "#...#", "#...#", "#...#"),
+    "O": (".###.", "#...#", "#...#", "#...#", "#...#", "#...#", ".###."),
+    "P": ("####.", "#...#", "#...#", "####.", "#....", "#....", "#...."),
+    "Q": (".###.", "#...#", "#...#", "#...#", "#.#.#", "#..#.", ".##.#"),
+    "R": ("####.", "#...#", "#...#", "####.", "#.#..", "#..#.", "#...#"),
+    "S": (".####", "#....", "#....", ".###.", "....#", "....#", "####."),
+    "T": ("#####", "..#..", "..#..", "..#..", "..#..", "..#..", "..#.."),
+    "U": ("#...#", "#...#", "#...#", "#...#", "#...#", "#...#", ".###."),
+    "V": ("#...#", "#...#", "#...#", "#...#", "#...#", ".#.#.", "..#.."),
+    "W": ("#...#", "#...#", "#...#", "#.#.#", "#.#.#", "##.##", "#...#"),
+    "X": ("#...#", ".#.#.", "..#..", "..#..", "..#..", ".#.#.", "#...#"),
+    "Y": ("#...#", "#...#", ".#.#.", "..#..", "..#..", "..#..", "..#.."),
+    "Z": ("#####", "....#", "...#.", "..#..", ".#...", "#....", "#####"),
+    "0": (".###.", "#..##", "#.#.#", "##..#", "#...#", "#...#", ".###."),
+    "1": ("..#..", ".##..", "..#..", "..#..", "..#..", "..#..", ".###."),
+    "2": (".###.", "#...#", "....#", "...#.", "..#..", ".#...", "#####"),
+    "3": ("####.", "....#", "....#", ".###.", "....#", "....#", "####."),
+    "4": ("...#.", "..##.", ".#.#.", "#..#.", "#####", "...#.", "...#."),
+    "5": ("#####", "#....", "####.", "....#", "....#", "#...#", ".###."),
+    "6": (".###.", "#....", "#....", "####.", "#...#", "#...#", ".###."),
+    "7": ("#####", "....#", "...#.", "..#..", "..#..", "..#..", "..#.."),
+    "8": (".###.", "#...#", "#...#", ".###.", "#...#", "#...#", ".###."),
+    "9": (".###.", "#...#", "#...#", ".####", "....#", "....#", ".###."),
+    " ": (".....", ".....", ".....", ".....", ".....", ".....", "....."),
+    ".": (".....", ".....", ".....", ".....", ".....", ".##..", ".##.."),
+    ",": (".....", ".....", ".....", ".....", ".##..", ".##..", ".#..."),
+    ":": (".....", ".##..", ".##..", ".....", ".##..", ".##..", "....."),
+    ";": (".....", ".##..", ".##..", ".....", ".##..", ".##..", ".#..."),
+    "!": ("..#..", "..#..", "..#..", "..#..", "..#..", ".....", "..#.."),
+    "?": (".###.", "#...#", "....#", "...#.", "..#..", ".....", "..#.."),
+    "-": (".....", ".....", ".....", "#####", ".....", ".....", "....."),
+    "'": ("..#..", "..#..", ".#...", ".....", ".....", ".....", "....."),
+    '"': (".#.#.", ".#.#.", ".....", ".....", ".....", ".....", "....."),
+    "(": ("...#.", "..#..", ".#...", ".#...", ".#...", "..#..", "...#."),
+    ")": (".#...", "..#..", "...#.", "...#.", "...#.", "..#..", ".#..."),
+    "/": ("....#", "....#", "...#.", "..#..", ".#...", "#....", "#...."),
+    "%": ("##..#", "##.#.", "...#.", "..#..", ".#...", "#.#.#", "#.##."),
+    "$": ("..#..", ".####", "#.#..", ".###.", "..#.#", "####.", "..#.."),
+    "&": (".###.", "#...#", "#.#..", ".#...", "#.#.#", "#..#.", ".##.#"),
+    "+": (".....", "..#..", "..#..", "#####", "..#..", "..#..", "....."),
+    "=": (".....", ".....", "#####", ".....", "#####", ".....", "....."),
+    "*": (".....", ".#.#.", "..#..", "#####", "..#..", ".#.#.", "....."),
 }
 
-# Fancy punctuation falls back to its plain lookalike.
-ALIASES = {
-    "\u2018": "'", "\u2019": "'", "\u201c": '"', "\u201d": '"',
-    "\u2013": "-", "\u2014": "-", "\u2022": "-", "\u2026": ".",
-}
-
-CHAR_W = 6  # glyph cell width in font units (5 pixels + 1 spacing)
-CHAR_H = 7
+CELL_W = 6  # glyph advance in font units (5 px + 1 px gap)
 
 
-def glyph(ch):
-    """Bitmap rows for one character, with aliases and a blank fallback."""
-    if ch in FONT:
-        return FONT[ch]
-    if ch in ALIASES:
-        return FONT[ALIASES[ch]]
-    return FONT[" "]
+def clean(text):
+    """Upper-case the text and swap any unsupported char for a space."""
+    out = []
+    for ch in text.upper():
+        out.append(ch if ch in GLYPHS else " ")
+    return "".join(out)
 
 
 def text_width(text, scale):
-    """Pixel width of text drawn at the given scale."""
-    return len(text) * CHAR_W * scale
+    return len(clean(text)) * CELL_W * scale - scale
 
 
-# ---------------------------------------------------------------------------
-# Canvas: a plain RGB bytearray with tiny drawing helpers.
-# ---------------------------------------------------------------------------
-class Canvas:
+# -------------------------------------------------------------- canvas ----
+class Sheet:
+    """An RGB pixel buffer with simple drawing helpers."""
+
     def __init__(self, width, height, colour):
         self.width = width
         self.height = height
         self.pixels = bytearray(colour * (width * height))
 
-    def put(self, x, y, colour):
+    def set_px(self, x, y, colour):
         if 0 <= x < self.width and 0 <= y < self.height:
             i = (y * self.width + x) * 3
-            self.pixels[i] = colour[0]
-            self.pixels[i + 1] = colour[1]
-            self.pixels[i + 2] = colour[2]
+            self.pixels[i:i + 3] = bytes(colour)
 
-    def rect(self, x, y, w, h, colour):
-        for yy in range(y, y + h):
-            for xx in range(x, x + w):
-                self.put(xx, yy, colour)
+    def fill(self, x, y, w, h, colour):
+        x0 = max(0, x)
+        y0 = max(0, y)
+        x1 = min(self.width, x + w)
+        y1 = min(self.height, y + h)
+        row = bytes(colour) * (x1 - x0)
+        for yy in range(y0, y1):
+            i = (yy * self.width + x0) * 3
+            self.pixels[i:i + len(row)] = row
 
-    def hline(self, x, y, w, colour, thick=1):
-        self.rect(x, y, w, thick, colour)
+    def hline(self, x, y, w, colour=INK, thick=1):
+        self.fill(x, y, w, thick, colour)
 
-    def text(self, x, y, text, scale, colour=INK):
-        """Draw text at scale; returns the pixel width drawn."""
+    def vline(self, x, y, h, colour=INK, thick=1):
+        self.fill(x, y, thick, h, colour)
+
+    def frame(self, x, y, w, h, colour=INK, thick=1):
+        self.hline(x, y, w, colour, thick)
+        self.hline(x, y + h - thick, w, colour, thick)
+        self.vline(x, y, h, colour, thick)
+        self.vline(x + w - thick, y, h, colour, thick)
+
+    def glyph(self, x, y, ch, scale, colour):
+        rows = GLYPHS.get(ch, GLYPHS[" "])
+        for ry, row in enumerate(rows):
+            for rx, cell in enumerate(row):
+                if cell == "#":
+                    self.fill(x + rx * scale, y + ry * scale,
+                              scale, scale, colour)
+
+    def text(self, x, y, raw, scale, colour=INK):
         cx = x
-        for ch in text:
-            rows = glyph(ch)
-            for row in range(CHAR_H):
-                bits = rows[row]
-                for col in range(5):
-                    if bits & (1 << (4 - col)):
-                        self.rect(cx + col * scale, y + row * scale,
-                                  scale, scale, colour)
-            cx += CHAR_W * scale
-        return cx - x
+        for ch in clean(raw):
+            self.glyph(cx, y, ch, scale, colour)
+            cx += CELL_W * scale
+        return cx
 
-    def text_centred(self, cx, y, text, scale, colour=INK):
-        w = text_width(text, scale)
-        self.text(cx - w // 2, y, text, scale, colour)
-        return w
+    def centred(self, y, raw, scale, colour=INK, cx=PAGE_W // 2):
+        w = text_width(raw, scale)
+        return self.text(cx - w // 2, y, raw, scale, colour)
 
 
-def wrap(text, max_width, scale):
-    """Greedy word wrap; returns a list of lines that fit max_width pixels."""
-    limit = max(1, max_width // (CHAR_W * scale))
+def wrap(raw, scale, max_w):
+    """Greedy word wrap; returns a list of lines that fit max_w."""
+    words = clean(raw).split(" ")
     lines = []
-    for paragraph in text.split("\n"):
-        words = paragraph.split(" ")
-        line = ""
-        for word in words:
-            trial = word if not line else line + " " + word
-            if len(trial) <= limit:
-                line = trial
-            else:
-                if line:
-                    lines.append(line)
-                # A single over-long word is hard-split so nothing overflows.
-                while len(word) > limit:
-                    lines.append(word[:limit])
-                    word = word[limit:]
-                line = word
-        if line:
-            lines.append(line)
+    cur = ""
+    for word in words:
+        trial = word if not cur else cur + " " + word
+        if text_width(trial, scale) <= max_w:
+            cur = trial
+        else:
+            if cur:
+                lines.append(cur)
+            cur = word
+    if cur:
+        lines.append(cur)
     return lines
 
 
-def block(canvas, x, y, lines, scale, line_gap=6, colour=INK):
-    """Draw wrapped lines; returns the y just below the block."""
-    step = CHAR_H * scale + line_gap
-    for line in lines:
-        canvas.text(x, y, line, scale, colour)
-        y += step
+def paragraph(sheet, x, y, raw, scale, max_w, leading, colour=INK):
+    """Draw a wrapped paragraph; returns the y just below the last line."""
+    for line in wrap(raw, scale, max_w):
+        sheet.text(x, y, line, scale, colour)
+        y += leading
     return y
 
 
-def centred_block(canvas, cx, y, lines, scale, line_gap=6, colour=INK):
-    step = CHAR_H * scale + line_gap
-    for line in lines:
-        canvas.text_centred(cx, y, line, scale, colour)
-        y += step
-    return y
-
-
-# ---------------------------------------------------------------------------
-# The front page itself.
-# ---------------------------------------------------------------------------
-def draw_page():
-    c = Canvas(WIDTH, HEIGHT, PAPER)
-    x0 = MARGIN
-    x1 = WIDTH - MARGIN
-    full = x1 - x0
-
-    # --- masthead ---------------------------------------------------------
-    c.hline(x0, 26, full, INK, 3)
-    c.hline(x0, 32, full, INK, 1)
-    c.text_centred(WIDTH // 2, 44, "THE WORLD", 13)
-    c.hline(x0, 150, full, INK, 1)
-    c.text(x0, 160, "WEDNESDAY, 25 NOVEMBER 2026", 2)
-    right = "PRICE $2.00 - No. 330"
-    c.text(x1 - text_width(right, 2), 160, right, 2)
-    c.hline(x0, 186, full, INK, 4)
-
-    # --- lead story -------------------------------------------------------
-    y = 204
-    y = centred_block(c, WIDTH // 2, y, ["UKRAINE HITS", "RUSSIAN SHIP"], 7, 8)
-    y += 6
-    sub = ("Zelenskiy confirms Kyiv behind Saturday's drone strike on a "
-           "Russian cargo vessel in the Gulf of Finland - as Norway urges "
-           "caution and Kyiv says it sank a warship off Libya.")
-    y = centred_block(c, WIDTH // 2, y, wrap(sub, 880, 2), 2, 6)
-    y += 8
-    lead_a = ("President Volodymyr Zelenskiy confirmed on Tuesday that "
-              "Ukraine was responsible for Saturday's drone strike on a "
-              "Russian cargo ship in the Gulf of Finland, the first open "
-              "admission of an attack on a Russian vessel in Baltic waters.")
-    lead_b = ("Norway, one of Kyiv's staunchest supporters, urged Ukraine "
-              "to exercise caution in such operations. Kyiv also claimed "
-              "on Monday that its forces sank a Russian warship and "
-              "damaged a cargo vessel off the Libyan coast.")
-    col_w = (full - 24) // 2
-    ya = block(c, x0, y, wrap(lead_a, col_w, 2), 2, 6)
-    yb = block(c, x0 + col_w + 24, y, wrap(lead_b, col_w, 2), 2, 6)
-    y = max(ya, yb) + 6
-    c.hline(x0, y, full, INK, 2)
-    y += 14
-
-    # --- three front-page stories -----------------------------------------
-    stories = [
-        ("RIYADH",
-         "HOUTHIS HIT RIYADH TOWER",
-         "A Houthi drone struck the tallest tower in Riyadh's King "
-         "Abdullah Financial District, wounding 11. The coalition hit "
-         "Hodeidah port in reply; the US, Egypt and Bahrain condemned "
-         "the attack."),
-        ("BRUSSELS",
-         "NATO VOWS SPACE DEFENCE",
-         "NATO vowed to defend against threats in space after reports "
-         "that Russia is preparing to launch a nuclear-armed satellite, "
-         "possibly as soon as December."),
-        ("ANTALYA",
-         "CLIMATE TALKS END WITH NO DEAL",
-         "The Turkey climate summit ended without a final agreement, "
-         "leaving a divided world. A Dutch court kept binding climate "
-         "targets in force as the blame game over who pays goes on."),
-    ]
-    gap = 24
-    col_w = (full - 2 * gap) // 3
-    top = y
-    bottom = top
-    for i, (kicker, head, body) in enumerate(stories):
-        cx = x0 + i * (col_w + gap)
-        yy = top
-        yy = block(c, cx, yy, [kicker], 2, 6, GREY)
-        yy += 2
-        yy = block(c, cx, yy, wrap(head, col_w, 3), 3, 6)
-        yy += 2
-        yy = block(c, cx, yy, wrap(body, col_w, 2), 2, 6)
-        bottom = max(bottom, yy)
-        if i < 2:
-            c.rect(cx + col_w + 12, top, 1, bottom - top, GREY)
-    y = bottom + 8
-    c.hline(x0, y, full, INK, 2)
-    y += 12
-
-    # --- in brief ----------------------------------------------------------
-    y = block(c, x0, y, ["IN BRIEF"], 2, 6)
-    y += 4
-    briefs = [
-        "Trump pardons turkeys Freedom and Feathers.",
-        "Trump awards Giuliani the Medal of Freedom.",
-        "Trump plans tariffs on 16 trading partners.",
-        "Sarkozy and Bruni ordered to stand trial.",
-        "Shenzhou-24 launches with Pakistani astronaut.",
-        "Australia-Solomons sign security pact.",
-    ]
-    brow_h = 0
-    for row in range(2):
-        yy = y
-        for col in range(3):
-            cx = x0 + col * (col_w + gap)
-            item = briefs[row * 3 + col]
-            end = block(c, cx, yy, wrap("- " + item, col_w, 2), 2, 5)
-            brow_h = max(brow_h, end - yy)
-        y += brow_h + 8
-    y += 2
-    c.hline(x0, y, full, INK, 2)
-    y += 12
-
-    # --- by the numbers ----------------------------------------------------
-    numbers = [
-        ("11 WOUNDED", "Riyadh tower hit"),
-        ("30 HELD", "Cartagena hostages"),
-        ("36% RISE", "Bangladesh wages"),
-        ("16 PARTNERS", "tariff targets"),
-    ]
-    n_w = full // 4
-    for i, (big, small) in enumerate(numbers):
-        cx = x0 + i * n_w
-        c.text_centred(cx + n_w // 2, y, big, 3)
-        c.text_centred(cx + n_w // 2, y + 28, small, 2, GREY)
-    y += 54
-    c.hline(x0, y, full, INK, 4)
-    y += 8
-
-    # --- footer ------------------------------------------------------------
-    c.text_centred(WIDTH // 2, y, "SUMMED UP IN ONE IMAGE - THE WORLD", 2, GREY)
-    return c
-
-
-# ---------------------------------------------------------------------------
-# PNG encoding (hand-rolled: signature, IHDR, IDAT, IEND; fixed zlib level,
-# no timestamps anywhere, so the bytes are identical on every run).
-# ---------------------------------------------------------------------------
-def chunk(kind, data):
-    out = struct.pack(">I", len(data)) + kind + data
-    out += struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
-    return out
-
-
-def encode_png(canvas):
+# ---------------------------------------------------------------- png ------
+def write_png(sheet, path):
     raw = bytearray()
-    for yy in range(canvas.height):
+    stride = sheet.width * 3
+    for yy in range(sheet.height):
         raw.append(0)  # filter: none
-        start = yy * canvas.width * 3
-        raw += canvas.pixels[start:start + canvas.width * 3]
-    png = b"\x89PNG\r\n\x1a\n"
-    ihdr = struct.pack(">IIBBBBB", canvas.width, canvas.height, 8, 2, 0, 0, 0)
-    png += chunk(b"IHDR", ihdr)
-    png += chunk(b"IDAT", zlib.compress(bytes(raw), 9))
-    png += chunk(b"IEND", b"")
-    return png
+        start = yy * stride
+        raw += sheet.pixels[start:start + stride]
+    comp = zlib.compress(bytes(raw), 9)
+
+    def chunk(kind, data):
+        out = struct.pack(">I", len(data)) + kind + data
+        out += struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
+        return out
+
+    ihdr = struct.pack(">IIBBBBB", sheet.width, sheet.height, 8, 2, 0, 0, 0)
+    blob = b"\x89PNG\r\n\x1a\n"
+    blob += chunk(b"IHDR", ihdr)
+    blob += chunk(b"IDAT", comp)
+    blob += chunk(b"IEND", b"")
+    with open(path, "wb") as fh:
+        fh.write(blob)
 
 
-def output_dir():
-    """Where entry.png goes: MAKEFUN_OUTPUT_DIR wins, then /output when it
-    exists (the grader's mount), else the current directory."""
+# -------------------------------------------------------------- content ----
+DATE_LINE = "WEDNESDAY, 25 NOVEMBER 2026"
+MASTHEAD = "THE WORLD"
+
+LEAD_KICKER = "WAR AT SEA  *  UKRAINE STRIKES FAR FROM HOME"
+LEAD_HEAD = "UKRAINE SINKS RUSSIAN WARSHIP OFF LIBYA"
+LEAD_SUB = ("Kyiv says sea drones destroyed the corvette Merkury at Benghazi "
+            "and hit a cargo ship in the Gulf of Finland")
+LEAD_BODY = (
+    "Ukraine said on Tuesday that its naval drones sank the Russian missile "
+    "corvette Merkury in the Libyan port of Benghazi and struck the cargo "
+    "vessel Sparta II in the Gulf of Finland. Kyiv called the Benghazi "
+    "strike lawful self-defence. Moscow vowed what President Vladimir "
+    "Putin called inevitable retaliation, while Norway urged caution."
+)
+
+STORIES = [
+    {
+        "kicker": "MARKETS",
+        "head": "NVIDIA TUMBLES AS AI BOOM DOUBTS SPREAD",
+        "body": (
+            "Nvidia shares fell about 7 percent on Tuesday, a day after the "
+            "board brought back Jensen Huang as chief executive. Investors "
+            "are again asking whether the AI boom can pay for itself."
+        ),
+    },
+    {
+        "kicker": "MIDDLE EAST",
+        "head": "MINES HIT TANKERS IN STRAIT OF HORMUZ",
+        "body": (
+            "Iran's Revolutionary Guards said oil tankers under American air "
+            "escort struck naval mines in the Strait of Hormuz, the passage "
+            "for a fifth of the world's oil. A tower in Riyadh was hit and "
+            "11 people were hurt."
+        ),
+    },
+    {
+        "kicker": "ASIA",
+        "head": "FACTORY FIRE IN INDONESIA KILLS 26",
+        "body": (
+            "At least 26 workers died after fire swept through a candy "
+            "factory in Cikande, Banten province, west of Jakarta. Rescue "
+            "teams searched the burned-out plant as families waited outside "
+            "for news of their loved ones."
+        ),
+    },
+]
+
+BRIEFS = [
+    "SARKOZY TO FACE TRIAL: French judges order the former president and "
+    "his wife Carla Bruni to trial, with a first hearing on 1 April 2027.",
+    "HOSTAGES IN CARTAGENA: Armed men held about 20 people in a "
+    "supermarket in the Colombian port city before police moved in.",
+    "PAKISTAN IN ORBIT: Pakistan's first astronaut reached China's space "
+    "station, a milestone for the country's space programme.",
+    "SENEGAL CHAMPIONS AGAIN: Senegal regained the Africa Cup of Nations "
+    "title after sport's highest court ruled in its favour.",
+]
+
+NUMBERS = [
+    ("2.76%", "NIKKEI FALL ON TUESDAY"),
+    ("7%", "NVIDIA SHARES DROP"),
+    ("26", "WORKERS KILLED IN BANTEN"),
+    ("11", "WOUNDED IN RIYADH HIT"),
+]
+
+
+# -------------------------------------------------------------- layout ----
+MARGIN = 40
+CONTENT_W = PAGE_W - 2 * MARGIN
+
+
+def draw(sheet):
+    sheet.fill(0, 0, PAGE_W, PAGE_H, PAPER)
+
+    # --- masthead ------------------------------------------------------
+    sheet.centred(26, MASTHEAD, 12)
+    sheet.hline(MARGIN, 122, CONTENT_W, RULE, 4)
+    sheet.centred(134, DATE_LINE, 2)
+    sheet.text(MARGIN, 134, "NO. 329", 2, GREY)
+    right = "PRICE: ONE DOLLAR"
+    sheet.text(PAGE_W - MARGIN - text_width(right, 2), 134, right, 2, GREY)
+    sheet.hline(MARGIN, 160, CONTENT_W, RULE, 2)
+
+    # --- lead story ----------------------------------------------------
+    y = 176
+    sheet.centred(y, LEAD_KICKER, 2, GREY)
+    y += 30
+    for line in wrap(LEAD_HEAD, 4, CONTENT_W):
+        sheet.centred(y, line, 4)
+        y += 36
+    y += 6
+    for line in wrap(LEAD_SUB, 2, CONTENT_W):
+        sheet.centred(y, line, 2, GREY)
+        y += 19
+    y += 12
+    y = paragraph(sheet, MARGIN, y, LEAD_BODY, 2, CONTENT_W, 19)
+    y += 8
+    sheet.hline(MARGIN, y, CONTENT_W, RULE, 2)
+    y += 12
+
+    # --- three front-page stories --------------------------------------
+    gap = 24
+    col_w = (CONTENT_W - 2 * gap) // 3
+    col_tops = []
+    for idx, story in enumerate(STORIES):
+        x = MARGIN + idx * (col_w + gap)
+        cy = y
+        sheet.text(x, cy, story["kicker"], 2, GREY)
+        cy += 22
+        for line in wrap(story["head"], 2, col_w):
+            sheet.text(x, cy, line, 2)
+            cy += 18
+        cy += 6
+        cy = paragraph(sheet, x, cy, story["body"], 2, col_w, 16)
+        col_tops.append(cy)
+    col_h = max(col_tops) - y
+    for idx in range(2):
+        x = MARGIN + idx * (col_w + gap)
+        sheet.vline(x + col_w + gap // 2, y, col_h, GREY, 1)
+    y = max(col_tops) + 6
+    sheet.hline(MARGIN, y, CONTENT_W, RULE, 2)
+    y += 10
+
+    # --- in brief ------------------------------------------------------
+    sheet.text(MARGIN, y, "IN BRIEF", 2)
+    sheet.hline(MARGIN + text_width("IN BRIEF", 2) + 12, y + 7,
+                CONTENT_W - text_width("IN BRIEF", 2) - 12, GREY, 1)
+    y += 26
+    brief_w = (CONTENT_W - 32) // 2
+    brief_bottom = y
+    for half in range(2):
+        bx = MARGIN + half * (brief_w + 32)
+        by = y
+        for item in BRIEFS[half * 2:half * 2 + 2]:
+            sheet.text(bx, by, "*", 2)
+            by = paragraph(sheet, bx + 24, by, item, 2, brief_w - 24, 16)
+            by += 4
+        brief_bottom = max(brief_bottom, by)
+    y = brief_bottom + 4
+    sheet.hline(MARGIN, y, CONTENT_W, RULE, 2)
+    y += 10
+
+    # --- by the numbers -------------------------------------------------
+    sheet.text(MARGIN, y, "BY THE NUMBERS", 2)
+    sheet.hline(MARGIN + text_width("BY THE NUMBERS", 2) + 12, y + 7,
+                CONTENT_W - text_width("BY THE NUMBERS", 2) - 12, GREY, 1)
+    y += 22
+    box_w = (CONTENT_W - 3 * 16) // 4
+    box_h = 80
+    for idx, (num, label) in enumerate(NUMBERS):
+        x = MARGIN + idx * (box_w + 16)
+        sheet.frame(x, y, box_w, box_h, RULE, 2)
+        sheet.centred(y + 8, num, 3, INK, cx=x + box_w // 2)
+        ly = y + 36
+        for line in wrap(label, 2, box_w - 20):
+            sheet.centred(ly, line, 2, GREY, cx=x + box_w // 2)
+            ly += 14
+    y += box_h + 10
+
+    # --- footer ---------------------------------------------------------
+    sheet.hline(MARGIN, y, CONTENT_W, RULE, 2)
+    y += 10
+    sheet.centred(y, "THE WORLD  *  WEDNESDAY, 25 NOVEMBER 2026", 2, GREY)
+    assert y + 20 <= PAGE_H - 20, "layout overflowed the page"
+
+
+def pick_output_dir():
     env = os.environ.get("MAKEFUN_OUTPUT_DIR")
     if env:
         return env
     if os.path.isdir("/output"):
         return "/output"
-    return "."
+    return os.getcwd()
 
 
 def main():
-    png = encode_png(draw_page())
-    target = os.path.join(output_dir(), "entry.png")
-    with open(target, "wb") as fh:
-        fh.write(png)
-    # A copy next to this file is handy for a local look, but the grader may
-    # run with a read-only repository directory, so never fail over it.
+    sheet = Sheet(PAGE_W, PAGE_H, PAPER)
+    draw(sheet)
+    out_dir = pick_output_dir()
+    os.makedirs(out_dir, exist_ok=True)
+    target = os.path.join(out_dir, "entry.png")
+    write_png(sheet, target)
+    # Best-effort copy next to this script; the grader's repo dir is
+    # read-only, so a failure here must never fail the run.
     try:
         here = os.path.dirname(os.path.abspath(__file__))
         local = os.path.join(here, "entry.png")
         if os.path.abspath(target) != os.path.abspath(local):
-            with open(local, "wb") as fh:
-                fh.write(png)
+            with open(target, "rb") as src:
+                data = src.read()
+            with open(local, "wb") as dst:
+                dst.write(data)
     except OSError:
         pass
-    print("wrote %s (%d bytes)" % (target, len(png)))
+    print("wrote %s (%d bytes)" % (target, os.path.getsize(target)))
     return 0
 
 
